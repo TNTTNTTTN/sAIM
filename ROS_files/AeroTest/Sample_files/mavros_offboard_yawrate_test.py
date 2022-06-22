@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 #***************************************************************************
 #
 #   Copyright (c) 2020 PX4 Development Team. All rights reserved.
@@ -35,13 +35,10 @@
 # @author Pedro Roque <padr@kth.se>
 #
 
-from __future__ import division
-
 PKG = 'px4'
-
 import rospy
 from geometry_msgs.msg import Quaternion, Vector3
-from mavros_msgs.msg import AttitudeTarget
+from mavros_msgs.msg import AttitudeTarget, ParamValue
 from mavros_test_common import MavrosTestCommon
 from pymavlink import mavutil
 from six.moves import xrange
@@ -123,8 +120,10 @@ class MavrosOffboardYawrateTest(MavrosTestCommon):
                                    10, -1)
 
         self.log_topic_vars()
-        self.set_arm(True, 5)
+        rcl_except = ParamValue(1 << 2, 0.0)
+        self.set_param("COM_RCL_EXCEPT", rcl_except, 5)
         self.set_mode("OFFBOARD", 5)
+        self.set_arm(True, 5)
         rospy.loginfo("run mission")
         rospy.loginfo("attempting to cross boundary | z: {2} , stay within x: {0}  y: {1} \n   and achieve {3} yawrate".
                       format(boundary_x, boundary_y, boundary_z, self.des_yawrate))

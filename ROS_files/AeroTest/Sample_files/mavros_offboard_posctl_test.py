@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 #***************************************************************************
 #
 #   Copyright (c) 2015 PX4 Development Team. All rights reserved.
@@ -37,8 +37,6 @@
 #
 # The shebang of this file is currently Python2 because some
 # dependencies such as pymavlink don't play well with Python3 yet.
-from __future__ import division
-
 PKG = 'px4'
 
 import rospy
@@ -167,9 +165,8 @@ class MavrosOffboardPosctlTest(MavrosTestCommon):
         # exempting failsafe from lost RC to allow offboard
         rcl_except = ParamValue(1<<2, 0.0)
         self.set_param("COM_RCL_EXCEPT", rcl_except, 5)
-        self.set_mode("OFFBOARD", 5)
         self.set_arm(True, 5)
-
+        self.set_mode("OFFBOARD", 5)
         rospy.loginfo("run mission")
         positions = ((0, 0, 0), (50, 50, 20), (50, -50, 20), (-50, -50, 20),
                      (0, 0, 20))
