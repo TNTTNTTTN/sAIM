@@ -15,7 +15,8 @@ from threading import Thread
 from tf.transformations import quaternion_from_euler
 
 class Ctrtest(Initialset):
-    def __init__(self, systype):
+    def __init__(self, systype, wplat=0 , wplon=0, buildlat=0, buildlon=0):
+        rospy.loginfo("system input: {}, {}, {}, {}, {}".format(systype, wplat, wplon, buildlat, buildlon))
         super(Ctrtest, self).__init__()
         if systype == 1:
         # Posistion control setup
@@ -102,8 +103,13 @@ class Ctrtest(Initialset):
                               self.altitude.local))
 
         # For demo purposes we will lock yaw/heading to north.
-        yaw_degrees = 0  # North
-        yaw = math.radians(yaw_degrees)
+        headingy = y - self.local_position.pose.position.y
+        headingx = x - self.local_position.pose.position.x
+        if abs(headingy) < self.radius or abs(headingx) < self.radius:
+            alpha = 0
+        else:
+            alpha = math.atan2(headingy,headingx)
+        yaw = alpha
         quaternion = quaternion_from_euler(yaw, 0, 0, axes="rzyx")
         self.pos.pose.orientation = Quaternion(*quaternion)
 
@@ -246,14 +252,20 @@ class Ctrtest(Initialset):
 
 if __name__ == '__main__':
     rospy.init_node('test_node', anonymous=True)
-    if len(sys.argv) == 2:
-        systype = int(sys.argv[1])
+    systype = int(input("Input system type: \n"))
+    if systype == 1:
         offboard_control = Ctrtest(systype)
-        if systype == 1:
-            offboard_control.test_posctl()
-        elif systype == 2:
-            offboard_control.test_attctl()
+        offboard_control.test_posctl()
+    elif systype == 2:
+        lat1 : float
+        lon1 : float
+        lat2 : float
+        lon2 : float
+        wplat, wplon = input("WPT GPS coordinate : \n").split()
+        buildlat, buildlon = input("Building GPS coordinate : \n").split()
+        offboard_control = Ctrtest(systype, wplat=lat1, wplon=lon1, buildlat=lat2, buildlon=lon2)
+        offboard_control.test_attctl()
     else:
-        print("please input type for control: 1 = pos 2 = att")
-
+        print("wrong system type")
+        sys.exit(1)
 
