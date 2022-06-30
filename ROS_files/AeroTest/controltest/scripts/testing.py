@@ -5,18 +5,26 @@ import sys
 import rospy
 import math
 import numpy as np
+import pyproj
+import scipy.spatial.transform
 from geometry_msgs.msg import PoseStamped, Quaternion, Vector3
 from mavros_msgs.msg import ParamValue, AttitudeTarget
-from initialset import Initialset
+from mavrosinit import Mavrosinit
+from darknetinit import Darknetinit
 from pymavlink import mavutil
 from six.moves import xrange
 from std_msgs.msg import Header
 from threading import Thread
 from tf.transformations import quaternion_from_euler
 
-class Ctrtest(Initialset):
-    def __init__(self, systype, wplat=0 , wplon=0, buildlat=0, buildlon=0):
-        rospy.loginfo("system input: {}, {}, {}, {}, {}".format(systype, wplat, wplon, buildlat, buildlon))
+class Ctrtest(Darknetinit, Mavrosinit):
+    def __init__(self, systype, wp1lat=0 , wp1lon=0, wp2lat=0, wp2lon=0, wp3lat=0, wp3lon=0):
+        self.wp1lat = float(wp1lat)
+        self.wp1lon = float(wp1lon)
+        self.wp2lat = float(wp2lat)
+        self.wp2lon = float(wp2lon)
+        self.wp3lat = float(wp3lat)
+        self.wp3lon = float(wp3lon)
         super(Ctrtest, self).__init__()
         if systype == 1:
         # Posistion control setup
@@ -60,11 +68,11 @@ class Ctrtest(Initialset):
         self.att.body_rate = Vector3()
         self.att.header = Header()
         self.att.header.frame_id = "base_footprint"
-        self.att.orientation = Quaternion(*quaternion_from_euler(0, 0,
-                                                                 0, axes='rzyx'))
-        self.att.thrust = 0.7
-        self.att.type_mask = 7  # ignore body rate
-
+        # self.att.orientation = Quaternion(*quaternion_from_euler(0, 0, 0, axes='rzyx'))
+        self.att.orientation = self.local_position.pose.orientation
+        self.att.thrust = 0.71
+        # self.att.type_mask = 7  # ignore body rate
+        self.att.type_mask = 7
         while not rospy.is_shutdown():
             self.att.header.stamp = rospy.Time.now()
             self.att_setpoint_pub.publish(self.att)
@@ -72,6 +80,34 @@ class Ctrtest(Initialset):
                 rate.sleep()
             except rospy.ROSInterruptException:
                 pass
+    def lla2enu(self,lat, lon, alt, lat_org, lon_org, alt_org):
+        transformer = pyproj.Transformer.from_crs(
+            {"proj": 'latlong', "ellps": 'WGS84', "datum": 'WGS84'},
+            {"proj": 'geocent', "ellps": 'WGS84', "datum": 'WGS84'},
+        )
+        x, y, z = transformer.transform(lon, lat, alt, radians=False)
+        x_org, y_org, z_org = transformer.transform(lon_org, lat_org, alt_org, radians=False)
+        vec = np.array([[x - x_org, y - y_org, z - z_org]]).T
+
+        rot1 = scipy.spatial.transform.Rotation.from_euler('x', -(90 - lat_org),
+                                                           degrees=True).as_matrix()  # angle*-1 : left handed *-1
+        rot3 = scipy.spatial.transform.Rotation.from_euler('z', -(90 + lon_org),
+                                                           degrees=True).as_matrix()  # angle*-1 : left handed *-1
+
+        rotMatrix = rot1.dot(rot3)
+
+        enu = rotMatrix.dot(vec).T.ravel()
+        return enu.T
+
+    def wptsetup(self):
+        initlat = float(self.global_position.latitude)
+        initlon = float(self.global_position.longitude)
+        inithight = float(self.global_position.altitude)
+        wp1 = self.lla2enu(self.wp1lat, self.wp1lon, inithight+15, initlat, initlon, inithight)
+        wp2 = self.lla2enu(self.wp2lat, self.wp2lon, inithight+15, initlat, initlon, inithight)
+        wp3 = self.lla2enu(self.wp3lat, self.wp3lon, inithight+15, initlat, initlon, inithight)
+        self.going = ((wp1[0], wp1[1], wp1[2]), (wp2[0], wp2[1], wp2[2]), (wp3[0], wp3[1], wp3[2]))
+        self.back = ((wp3[0], wp3[1], wp1[2]), (wp2[0], wp2[1], wp2[2]), (wp1[0], wp1[1], wp1[2]), (0, 0, 5))
 
     def is_at_position(self, x, y, z, offset):
         """offset: meters"""
@@ -97,19 +133,15 @@ class Ctrtest(Initialset):
             format(x, y, z, self.local_position.pose.position.x,
                    self.local_position.pose.position.y,
                    self.local_position.pose.position.z))
-        rospy.loginfo("global position checking | lat: {0}, lon: {1}, alt:{2}"
+        rospy.loginfo("global position checking | lat: {0}, lon: {1}, alt1:{2}, alt2:{3}"
                       .format(self.global_position.latitude,
                               self.global_position.longitude,
-                              self.altitude.local))
+                              self.altitude.local, self.global_position.altitude))
 
         # For demo purposes we will lock yaw/heading to north.
         headingy = y - self.local_position.pose.position.y
         headingx = x - self.local_position.pose.position.x
-        if abs(headingy) < self.radius or abs(headingx) < self.radius:
-            alpha = 0
-        else:
-            alpha = math.atan2(headingy,headingx)
-        yaw = alpha
+        yaw = math.atan2(headingy,headingx)
         quaternion = quaternion_from_euler(yaw, 0, 0, axes="rzyx")
         self.pos.pose.orientation = Quaternion(*quaternion)
 
@@ -131,47 +163,9 @@ class Ctrtest(Initialset):
             except rospy.ROSException:
                 quit()
 
-    def att_testing(self,x,y,z, timeout):
+    def potentialflow(self):
         """timeout(int): seconds"""
-        # set a position setpoint
-        # compare current position and designated position
-        headingx = x - self.local_position.pose.position.x
-        headingy = y - self.local_position.pose.position.y
-        headingz = z - self.local_position.pose.position.z
-        if abs(headingx) > 1 or abs(headingy) > 1:
-            psi = math.atan2(headingy, headingx)
 
-        if headingz > 0:
-            self.att.thrust = 0.8
-        else:
-            self.att.thrust = 0.65
-
-        rospy.loginfo(
-            "attempting to reach position | x: {0}, y: {1}, z: {2} | current position x: {3:.2f}, y: {4:.2f}, z: {5:.2f}".
-            format(x, y, z, self.local_position.pose.position.x,
-                   self.local_position.pose.position.y,
-                   self.local_position.pose.position.z))
-        rospy.loginfo("global position checking | lat: {0}, lon: {1}, alt:{2}"
-                      .format(self.global_position.latitude,
-                              self.global_position.longitude,
-                              self.altitude.local))
-
-        # does it reach the position in 'timeout' seconds?
-        loop_freq = 2  # Hz
-        rate = rospy.Rate(loop_freq)
-        reached = False
-        for i in xrange(timeout * loop_freq):
-            if self.is_at_position(self.pos.pose.position.x,
-                                   self.pos.pose.position.y,
-                                   self.pos.pose.position.z, self.radius):
-                rospy.loginfo("position reached | seconds: {0} of {1}".format(
-                    i / loop_freq, timeout))
-                reached = True
-                break
-            try:
-                rate.sleep()
-            except rospy.ROSException:
-                quit()
 
     def test_posctl(self):
         """Test offboard position control"""
@@ -188,82 +182,57 @@ class Ctrtest(Initialset):
         self.set_arm(True, 5)
         self.set_mode("OFFBOARD", 5)
         rospy.loginfo("run mission")
-        positions = ((0, 0, 0), (50, 50, 20), (50, -50, 20), (-50, -50, 20),
-                     (0, 0, 20))
+        # positions = ((0, 0, 0), (0, 0, 15), (-100, 55, 15), (-180, 99, 15), (-100, 50, 15),
+        #              (0, 0, 15), (0, 0, 3))
+        positions = ((0, 0, 10), (50, 0, 10), (50, 50, 10), (0, 50, 10),
+                     (0, 0, 10))
 
         for i in xrange(len(positions)):
             self.reach_position(positions[i][0], positions[i][1],
-                                positions[i][2], 10)
+                                positions[i][2], 20)
 
         self.set_mode("AUTO.LAND", 5)
         self.wait_for_landed_state(mavutil.mavlink.MAV_LANDED_STATE_ON_GROUND,
                                    45, 0)
-
         self.set_arm(False, 5)
 
     def test_attctl(self):
         """Test offboard attitude control"""
-        # boundary to cross
-        boundary_x = 200
-        boundary_y = 100
-        boundary_z = 20
-
         # make sure the simulation is ready to start the mission
         self.wait_for_topics(60)
         self.wait_for_landed_state(mavutil.mavlink.MAV_LANDED_STATE_ON_GROUND,
                                    10, -1)
 
         self.log_topic_vars()
+        self.wptsetup()
         self.set_mode("OFFBOARD", 5)
         self.set_arm(True, 5)
         rospy.loginfo("run mission")
-        rospy.loginfo("attempting to cross boundary | x: {0}, y: {1}, z: {2}".
-                      format(boundary_x, boundary_y, boundary_z))
-        # positions = ((0, 0, 0),(0, 0, 15), (50, 50, 15), (50, -50, 15), (-50, -50, 15),
-        #              (0, 0, 0.5))
-        # for i in xrange(len(positions)):
-        #     self.reach_position(positions[i][0], positions[i][1],
-        #                         positions[i][2], 30)
+        for i in range(len(self.going)):
+            self.reach_position(self.going[i][0], self.going[i][1],
+                                self.going[i][2], 30)
+
+        for j in range(len(self.back)):
+            self.reach_position(self.back[j][0], self.back[j][1],
+                                self.back[j][2], 30)
 
         # does it cross expected boundaries in 'timeout' seconds?
-        timeout = 30  # (int) seconds
-        loop_freq = 2  # Hz
-        rate = rospy.Rate(loop_freq)
-        crossed = False
-        for i in xrange(timeout * loop_freq):
-            rospy.loginfo("current position | x: {0}, y: {1}, z: {2}".
-                          format(self.local_position.pose.position.x, self.local_position.pose.position.y, self.local_position.pose.position.z))
-            if (self.local_position.pose.position.x > boundary_x or
-                    self.local_position.pose.position.y > boundary_y or
-                    self.local_position.pose.position.z > boundary_z):
-                rospy.loginfo("boundary crossed | seconds: {0} of {1}".format(
-                    i / loop_freq, timeout))
-                crossed = True
-                break
-            try:
-                rate.sleep()
-            except rospy.ROSException as e:
-                quit()
-
         self.set_mode("AUTO.LAND", 5)
         self.wait_for_landed_state(mavutil.mavlink.MAV_LANDED_STATE_ON_GROUND,
                                    90, 0)
         self.set_arm(False, 5)
 
 if __name__ == '__main__':
-    rospy.init_node('test_node', anonymous=True)
+    rospy.init_node('controltest', anonymous=True)
     systype = int(input("Input system type: \n"))
     if systype == 1:
         offboard_control = Ctrtest(systype)
         offboard_control.test_posctl()
     elif systype == 2:
-        lat1 : float
-        lon1 : float
-        lat2 : float
-        lon2 : float
-        wplat, wplon = input("WPT GPS coordinate : \n").split()
-        buildlat, buildlon = input("Building GPS coordinate : \n").split()
-        offboard_control = Ctrtest(systype, wplat=lat1, wplon=lon1, buildlat=lat2, buildlon=lon2)
+        lat1, lon1 = float(input("WPT1 GPS coordinate : \n").split())
+        lat2, lon2 = float(input("WPT2 GPS coordinate : \n").split())
+        lat3, lon3 = float(input("WPT3 GPS coordinate : \n").split())
+        offboard_control = Ctrtest(systype, wp1lat=lat1, wp1lon=lon1, wp2lat=lat2, wp2lon=lon2)
         offboard_control.test_attctl()
     else:
         print("wrong system type")
