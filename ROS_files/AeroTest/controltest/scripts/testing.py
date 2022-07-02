@@ -7,8 +7,8 @@ import math
 import numpy as np
 import pyproj
 import scipy.spatial.transform
-from geometry_msgs.msg import PoseStamped, Quaternion, Vector3
-from mavros_msgs.msg import ParamValue, AttitudeTarget
+from geometry_msgs.msg import PoseStamped, Quaternion, Vector3, Twist
+from mavros_msgs.msg import ParamValue, AttitudeTarget, PositionTarget
 from mavrosinit import Mavrosinit
 from darknetinit import Darknetinit
 from pymavlink import mavutil
@@ -38,6 +38,7 @@ class Ctrtest(Darknetinit, Mavrosinit):
             self.pos_thread = Thread(target=self.send_pos, args=())
             self.pos_thread.daemon = True
             self.pos_thread.start()
+
         elif systype == 2:
             # Attitude control setup
             self.att = AttitudeTarget()
@@ -49,6 +50,16 @@ class Ctrtest(Darknetinit, Mavrosinit):
             self.att_thread = Thread(target=self.send_att, args=())
             self.att_thread.daemon = True
             self.att_thread.start()
+
+        elif systype == 3:
+            self.vel = PositionTarget()
+            self.radius = 0.1
+
+            self.vel_setpoint_pub = rospy.Publisher(
+                'mavros/setpoint_raw/local', PositionTarget, queue_size=1)
+            self.vel_thread = Thread(target=self.send_vel, args=())
+            self.vel_thread.daemon = True
+            self.vel_thread.start()
 
     def send_pos(self):
         rate = rospy.Rate(10)  # Hz
@@ -80,6 +91,22 @@ class Ctrtest(Darknetinit, Mavrosinit):
                 rate.sleep()
             except rospy.ROSInterruptException:
                 pass
+
+    def send_vel(self):
+        rate = rospy.Rate(10)  # Hz
+        self.vel.header = Header()
+        self.vel.header.frame_id = "base_footprint"
+        self.vel.coordinate_frame = 1 # Local NED
+        self.vel.type_mask = 7
+        self.vel.velocity = Vector3()
+        while not rospy.is_shutdown():
+            self.vel.header.stamp = rospy.Time.now()
+            self.vel_setpoint_pub.publish(self.vel)
+            try:  # prevent garbage in console output when thread is killed
+                rate.sleep()
+            except rospy.ROSInterruptException:
+                pass
+
     def lla2enu(self,lat, lon, alt, lat_org, lon_org, alt_org):
         transformer = pyproj.Transformer.from_crs(
             {"proj": 'latlong', "ellps": 'WGS84', "datum": 'WGS84'},
@@ -163,9 +190,26 @@ class Ctrtest(Darknetinit, Mavrosinit):
             except rospy.ROSException:
                 quit()
 
-    def potentialflow(self):
+    def potentialflow(self, x, y, z):
         """timeout(int): seconds"""
+        speed = 15
+        alpha = math.atan2(y - self.local_position.pose.position.y, x - self.local_position.pose.position.x)
+        self.vel.velocity.x = speed*math.cos(alpha)
+        self.vel.velocity.y = speed*math.sin(alpha)
+        localuniform = self.uniformcal(self.local_position.pose.position.x, self.local_position.pose.position.y, alpha, speed)
+        currentpotential = localuniform
+        targetrange1 = self.uniformcal(x-0.5*math.cos(alpha),y+0.5*math.sin(alpha),alpha,speed)
+        targetrange2 = self.uniformcal(x+0.5*math.cos(alpha),y-0.5*math.sin(alpha),alpha,speed)
+        if currentpotential > targetrange1:
+            self.vel.velocity.y += -1
+        elif currentpotential < targetrange2:
+            self.vel.velocity.y += 1
 
+    def uniformcal(self, x, y, alpha, speed):
+        return speed*(y * math.cos(alpha) - x * math.sin(alpha))
+
+    def doublitcal(self, x, y, objx, objy, speed, range):
+        return -speed*(range ** 2)*(y-objy)/((x-objx) ** 2 + (y-objy) ** 2)
 
     def test_posctl(self):
         """Test offboard position control"""
@@ -221,6 +265,43 @@ class Ctrtest(Darknetinit, Mavrosinit):
         self.wait_for_landed_state(mavutil.mavlink.MAV_LANDED_STATE_ON_GROUND,
                                    90, 0)
         self.set_arm(False, 5)
+    def test_vel(self):
+        boundary_z = 20
+        self.wait_for_topics(60)
+        self.wait_for_landed_state(mavutil.mavlink.MAV_LANDED_STATE_ON_GROUND,
+                                   10, -1)
+
+        self.log_topic_vars()
+        self.wptsetup()
+        self.set_mode("OFFBOARD", 5)
+        self.set_arm(True, 5)
+        timeout = 15  # (int) seconds
+        loop_freq = 2  # Hz
+        rate = rospy.Rate(loop_freq)
+        for i in xrange(timeout * loop_freq):
+            self.vel.velocity.x = 0
+            self.vel.velocity.y = 0
+            self.vel.velocity.z = 20
+            if (self.local_position.pose.position.z > boundary_z):
+                rospy.loginfo("boundary crossed | seconds: {0} of {1}".format(
+                    i / loop_freq, timeout))
+                break
+            try:
+                rate.sleep()
+            except rospy.ROSException as e:
+                quit()
+        for _ in xrange(timeout * loop_freq):
+            self.vel.velocity.x = 0
+            self.vel.velocity.y = 0
+            self.vel.velocity.z = -5
+            try:
+                rate.sleep()
+            except rospy.ROSException as e:
+                quit()
+        self.set_mode("AUTO.LAND", 5)
+        self.wait_for_landed_state(mavutil.mavlink.MAV_LANDED_STATE_ON_GROUND,
+                                   90, 0)
+        self.set_arm(False, 5)
 
 if __name__ == '__main__':
     rospy.init_node('controltest', anonymous=True)
@@ -228,12 +309,15 @@ if __name__ == '__main__':
     if systype == 1:
         offboard_control = Ctrtest(systype)
         offboard_control.test_posctl()
-    elif systype == 2:
-        lat1, lon1 = float(input("WPT1 GPS coordinate : \n").split())
-        lat2, lon2 = float(input("WPT2 GPS coordinate : \n").split())
-        lat3, lon3 = float(input("WPT3 GPS coordinate : \n").split())
+    elif systype == 2 or systype == 3:
+        lat1, lon1 = input("WPT1 GPS coordinate : \n").split()
+        lat2, lon2 = input("WPT2 GPS coordinate : \n").split()
+        lat3, lon3 = input("WPT3 GPS coordinate : \n").split()
         offboard_control = Ctrtest(systype, wp1lat=lat1, wp1lon=lon1, wp2lat=lat2, wp2lon=lon2)
-        offboard_control.test_attctl()
+        if systype == 2:
+            offboard_control.test_attctl()
+        else:
+            offboard_control.test_vel()
     else:
         print("wrong system type")
         sys.exit(1)
