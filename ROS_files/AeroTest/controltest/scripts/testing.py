@@ -53,7 +53,8 @@ class Ctrtest(Darknetinit, Mavrosinit):
 
         elif systype == 3:
             self.vel = PositionTarget()
-            self.radius = 0.1
+            self.vel.velocity = Vector3()
+            self.radius = 0.5
 
             self.vel_setpoint_pub = rospy.Publisher(
                 'mavros/setpoint_raw/local', PositionTarget, queue_size=1)
@@ -97,11 +98,12 @@ class Ctrtest(Darknetinit, Mavrosinit):
         self.vel.header = Header()
         self.vel.header.frame_id = "base_footprint"
         self.vel.coordinate_frame = 1 # Local NED
-        self.vel.type_mask = 7
-        self.vel.velocity = Vector3()
+        self.vel.type_mask = 7 # Ignore Body position
+
         while not rospy.is_shutdown():
             self.vel.header.stamp = rospy.Time.now()
             self.vel_setpoint_pub.publish(self.vel)
+
             try:  # prevent garbage in console output when thread is killed
                 rate.sleep()
             except rospy.ROSInterruptException:
@@ -175,14 +177,12 @@ class Ctrtest(Darknetinit, Mavrosinit):
         # does it reach the position in 'timeout' seconds?
         loop_freq = 2  # Hz
         rate = rospy.Rate(loop_freq)
-        reached = False
         for i in xrange(timeout * loop_freq):
             if self.is_at_position(self.pos.pose.position.x,
                                    self.pos.pose.position.y,
                                    self.pos.pose.position.z, self.radius):
                 rospy.loginfo("position reached | seconds: {0} of {1}".format(
                     i / loop_freq, timeout))
-                reached = True
                 break
 
             try:
@@ -190,26 +190,66 @@ class Ctrtest(Darknetinit, Mavrosinit):
             except rospy.ROSException:
                 quit()
 
-    def potentialflow(self, x, y, z):
+    def potentialflow(self,ori_x, ori_y, ori_z, x, y, z):
         """timeout(int): seconds"""
-        speed = 15
-        alpha = math.atan2(y - self.local_position.pose.position.y, x - self.local_position.pose.position.x)
-        self.vel.velocity.x = speed*math.cos(alpha)
-        self.vel.velocity.y = speed*math.sin(alpha)
-        localuniform = self.uniformcal(self.local_position.pose.position.x, self.local_position.pose.position.y, alpha, speed)
-        currentpotential = localuniform
-        targetrange1 = self.uniformcal(x-0.5*math.cos(alpha),y+0.5*math.sin(alpha),alpha,speed)
-        targetrange2 = self.uniformcal(x+0.5*math.cos(alpha),y-0.5*math.sin(alpha),alpha,speed)
-        if currentpotential > targetrange1:
-            self.vel.velocity.y += -1
-        elif currentpotential < targetrange2:
-            self.vel.velocity.y += 1
+        currentx = self.local_position.pose.position.x
+        currenty = self.local_position.pose.position.y
+        currentz = self.local_position.pose.position.z
+        posdiff = np.sqrt((x - currentx)**2 + (y-currenty)**2)
+        directionvec = [x - ori_x, y - ori_y]
 
-    def uniformcal(self, x, y, alpha, speed):
+        if posdiff > 30:
+            speed = 10
+        else :
+            speed = 0.2 * abs(posdiff)
+        alpha = math.atan2(y - ori_y, x - ori_x)
+        yaw = math.atan2(y - currenty, x - currentx)
+        vector = self.uniformveccal(speed, alpha) + self.sinkveccal(currentx,currenty,x,y,300/posdiff)
+        if np.dot(directionvec, [currentx - x, currenty - y]) >= 0:
+            vector = np.array([x - currentx, y - currenty])
+        elif hasattr(self, 'Obj'):
+            for i in range(len(self.Obj)):
+                if i == 0:
+                    continue
+                elif np.dot(directionvec,[self.Obj[i][0] - x, self.Obj[i][1] - y]) >= 0:
+                    rospy.loginfo(i, np.dot(directionvec,[self.Obj[i][0] - x, self.Obj[i][1] - y]))
+                    continue
+                elif abs(self.uniformpocal(currentx,currenty,alpha,speed) - self.uniformpocal(self.Obj[i][0], self.Obj[i][1], alpha, speed)) < speed:
+                    if currenty - self.Obj[i][1] == 0:
+                        vector[1] += speed
+                    else:
+                        vector[1] += 15*(currenty - self.Obj[i][1])/abs((currenty - self.Obj[i][1]))
+                vector += self.doublitveccal(currentx, currenty, self.Obj[i][0], self.Obj[i][1], self.Obj[i][2], speed, alpha)
+                rospy.loginfo("{}, {}".format(i, self.doublitveccal(currentx, currenty, self.Obj[i][0], self.Obj[i][1], self.Obj[i][2], speed, alpha)))
+        vector = vector/np.linalg.norm(vector)
+        self.vel.velocity.x = speed * vector[0]
+        self.vel.velocity.y = speed * vector[1]
+        self.vel.velocity.z = 15 - currentz
+        self.vel.yaw = yaw
+        rospy.loginfo("velocity: {0}, {1}, {2}".format(round(self.vel.velocity.x), round(self.vel.velocity.y), round(self.vel.velocity.z)))
+        rospy.loginfo("position: {0}, {1}".format(round(self.local_position.pose.position.x),round(self.local_position.pose.position.y)))
+
+    def uniformpocal(self, x, y, alpha, speed):
         return speed*(y * math.cos(alpha) - x * math.sin(alpha))
 
-    def doublitcal(self, x, y, objx, objy, speed, range):
+    def uniformveccal(self, speed, alpha):
+        return np.array([speed*math.cos(alpha), speed*math.sin(alpha)])
+
+    def doublitpocal(self, x, y, objx, objy, range, speed):
         return -speed*(range ** 2)*(y-objy)/((x-objx) ** 2 + (y-objy) ** 2)
+
+    def doublitveccal(self, x, y, objx, objy, range, speed, alpha):
+        vecx = -speed*(range**2)*((x-objx)**2 - (y-objy)**2)/(((x-objx)**2 + (y-objy)**2)**2)
+        vecy = -2*speed*(range**2)*((x-objx)*(y-objy))/(((x-objx)**2 + (y-objy)**2)**2)
+        return np.array([vecx*math.cos(alpha) + vecy*math.sin(alpha), vecx*math.sin(alpha) + vecy*math.cos(alpha)])
+
+    def sinkpocal(self, x, y, posx, posy, strength):
+        return strength*math.atan2(y-posy,x-posx)
+
+    def sinkveccal(self,x, y, posx, posy, strength):
+        vecx = -strength * (x-posx)/((x-posx)**2 + (y-posy)**2)
+        vecy = -strength * (y-posy)/((x-posx)**2 + (y-posy)**2)
+        return np.array([vecx, vecy])
 
     def test_posctl(self):
         """Test offboard position control"""
@@ -226,10 +266,10 @@ class Ctrtest(Darknetinit, Mavrosinit):
         self.set_arm(True, 5)
         self.set_mode("OFFBOARD", 5)
         rospy.loginfo("run mission")
-        # positions = ((0, 0, 0), (0, 0, 15), (-100, 55, 15), (-180, 99, 15), (-100, 50, 15),
-        #              (0, 0, 15), (0, 0, 3))
-        positions = ((0, 0, 10), (50, 0, 10), (50, 50, 10), (0, 50, 10),
-                     (0, 0, 10))
+        positions = ((0, 0, 15), (-100, 55, 15), (-180, 99, 15), (-100, 50, 15),
+                     (0, 0, 15), (0, 0, 3))
+        # positions = ((0, 0, 10), (50, 0, 10), (50, 50, 10), (0, 50, 10),
+        #              (0, 0, 10))
 
         for i in xrange(len(positions)):
             self.reach_position(positions[i][0], positions[i][1],
@@ -265,8 +305,8 @@ class Ctrtest(Darknetinit, Mavrosinit):
         self.wait_for_landed_state(mavutil.mavlink.MAV_LANDED_STATE_ON_GROUND,
                                    90, 0)
         self.set_arm(False, 5)
+
     def test_vel(self):
-        boundary_z = 20
         self.wait_for_topics(60)
         self.wait_for_landed_state(mavutil.mavlink.MAV_LANDED_STATE_ON_GROUND,
                                    10, -1)
@@ -275,28 +315,23 @@ class Ctrtest(Darknetinit, Mavrosinit):
         self.wptsetup()
         self.set_mode("OFFBOARD", 5)
         self.set_arm(True, 5)
-        timeout = 15  # (int) seconds
-        loop_freq = 2  # Hz
+        position = ((0,0,0), (0,0,15), (100,0,15), (100,100,15), (0, 0, 15))
+        self.Obj = ((),(25,0,15),(50,-5,10),(95,73,20))
+        pos = 1
+        timeout = 180
+        loop_freq = 10  # Hz
         rate = rospy.Rate(loop_freq)
         for i in xrange(timeout * loop_freq):
-            self.vel.velocity.x = 0
-            self.vel.velocity.y = 0
-            self.vel.velocity.z = 20
-            if (self.local_position.pose.position.z > boundary_z):
-                rospy.loginfo("boundary crossed | seconds: {0} of {1}".format(
-                    i / loop_freq, timeout))
+            if pos == len(position):
                 break
+            self.potentialflow(position[pos-1][0], position[pos-1][1], position[pos-1][2], position[pos][0], position[pos][1], position[pos][2])
+            if self.is_at_position(position[pos][0], position[pos][1], self.local_position.pose.position.z,self.radius):
+                rospy.loginfo("position reached!")
+                pos += 1
+
             try:
                 rate.sleep()
-            except rospy.ROSException as e:
-                quit()
-        for _ in xrange(timeout * loop_freq):
-            self.vel.velocity.x = 0
-            self.vel.velocity.y = 0
-            self.vel.velocity.z = -5
-            try:
-                rate.sleep()
-            except rospy.ROSException as e:
+            except rospy.ROSException:
                 quit()
         self.set_mode("AUTO.LAND", 5)
         self.wait_for_landed_state(mavutil.mavlink.MAV_LANDED_STATE_ON_GROUND,
