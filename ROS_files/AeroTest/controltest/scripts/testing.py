@@ -8,7 +8,7 @@ import numpy as np
 import pyproj
 import scipy.spatial.transform
 from geometry_msgs.msg import PoseStamped, Quaternion, Vector3, Twist
-from mavros_msgs.msg import ParamValue, AttitudeTarget, PositionTarget
+from mavros_msgs.msg import ParamValue, AttitudeTarget, PositionTarget, LandingTarget
 from mavrosinit import Mavrosinit
 from darknetinit import Darknetinit
 from pymavlink import mavutil
@@ -201,7 +201,7 @@ class Ctrtest(Darknetinit, Mavrosinit):
         if posdiff > 30:
             speed = 10
         else :
-            speed = 0.2 * abs(posdiff)
+            speed = 0.25 * abs(posdiff)
         alpha = math.atan2(y - ori_y, x - ori_x)
         yaw = math.atan2(y - currenty, x - currentx)
         vector = self.uniformveccal(speed, alpha) + self.sinkveccal(currentx,currenty,x,y,300/posdiff)
@@ -251,6 +251,12 @@ class Ctrtest(Darknetinit, Mavrosinit):
         vecy = -strength * (y-posy)/((x-posx)**2 + (y-posy)**2)
         return np.array([vecx, vecy])
 
+    def precisionlanding(self):
+        self.landing_target_sub = rospy.Subscriber('mavros/landing_target/raw', LandingTarget,
+                                            self.landingtarget_callback)
+        self.landing_target = LandingTarget()
+        self.set_mode('AUTO.PRECLAND',5)
+
     def test_posctl(self):
         """Test offboard position control"""
 
@@ -266,16 +272,15 @@ class Ctrtest(Darknetinit, Mavrosinit):
         self.set_arm(True, 5)
         self.set_mode("OFFBOARD", 5)
         rospy.loginfo("run mission")
-        positions = ((0, 0, 15), (-100, 55, 15), (-180, 99, 15), (-100, 50, 15),
-                     (0, 0, 15), (0, 0, 3))
-        # positions = ((0, 0, 10), (50, 0, 10), (50, 50, 10), (0, 50, 10),
-        #              (0, 0, 10))
+        # positions = ((0, 0, 15), (-100, 55, 15), (-180, 99, 15), (-100, 50, 15),
+        #              (0, 0, 15), (0, 0, 3))
+        positions = ((0, 0, 1), (0, 0,10))
 
         for i in xrange(len(positions)):
             self.reach_position(positions[i][0], positions[i][1],
                                 positions[i][2], 20)
 
-        self.set_mode("AUTO.LAND", 5)
+        # self.set_mode("AUTO.LAND", 5)
         self.wait_for_landed_state(mavutil.mavlink.MAV_LANDED_STATE_ON_GROUND,
                                    45, 0)
         self.set_arm(False, 5)
@@ -333,7 +338,7 @@ class Ctrtest(Darknetinit, Mavrosinit):
                 rate.sleep()
             except rospy.ROSException:
                 quit()
-        self.set_mode("AUTO.LAND", 5)
+        self.precisionlanding()
         self.wait_for_landed_state(mavutil.mavlink.MAV_LANDED_STATE_ON_GROUND,
                                    90, 0)
         self.set_arm(False, 5)

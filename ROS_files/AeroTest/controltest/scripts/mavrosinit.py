@@ -138,10 +138,12 @@ class Mavrosinit():
                         'MAV_STATE'][data.system_status].name))
 
         self.state = data
-
         # mavros publishes a disconnected state message on init
         if not self.sub_topics_ready['state'] and data.connected:
             self.sub_topics_ready['state'] = True
+
+    def landingtarget_callback(self, data):
+        self.landing_target = data
     #
     # Helper methods
     #
