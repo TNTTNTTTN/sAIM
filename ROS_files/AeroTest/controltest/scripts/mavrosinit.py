@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 import rospy
 import math
-from geometry_msgs.msg import PoseStamped
-from mavros_msgs.msg import Altitude, ExtendedState, HomePosition, State
+from geometry_msgs.msg import PoseStamped, TwistStamped
+from mavros_msgs.msg import Altitude, ExtendedState, HomePosition, State, PositionTarget
 from mavros_msgs.srv import CommandBool, ParamGet, ParamSet, SetMode
 from pymavlink import mavutil
 from sensor_msgs.msg import NavSatFix, Imu, BatteryState
@@ -18,8 +18,8 @@ class Mavrosinit():
         self.home_position = HomePosition()
         self.local_position = PoseStamped()
         self.state = State()
+        self.local_vel = TwistStamped()
         self.mav_type = None
-
         self.sub_topics_ready = {
             key: False
             for key in [
@@ -64,8 +64,14 @@ class Mavrosinit():
                                               self.local_position_callback)
         self.state_sub = rospy.Subscriber('mavros/state', State,
                                           self.state_callback)
+
         self.battery_sub = rospy.Subscriber('mavros/battery', BatteryState,
                                             self.battery_callback)
+
+        self.local_vel_sub = rospy.Subscriber('mavros/global_position/raw/gps_vel', TwistStamped,
+                                                 self.local_vel_callback)
+
+
 #
 # Callback functions
 #
@@ -144,6 +150,9 @@ class Mavrosinit():
 
     def landingtarget_callback(self, data):
         self.landing_target = data
+
+    def local_vel_callback(self, data):
+        self.local_vel = data
     #
     # Helper methods
     #
