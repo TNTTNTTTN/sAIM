@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 import rospy
 import math
-from geometry_msgs.msg import PoseStamped
-from mavros_msgs.msg import Altitude, ExtendedState, HomePosition, ParamValue, State, \
-                            WaypointList
-from mavros_msgs.srv import CommandBool, ParamGet, ParamSet, SetMode, SetModeRequest, WaypointClear, \
-                            WaypointPush
+from geometry_msgs.msg import PoseStamped, TwistStamped
+from mavros_msgs.msg import Altitude, ExtendedState, HomePosition, State, PositionTarget
+from mavros_msgs.srv import CommandBool, ParamGet, ParamSet, SetMode
 from pymavlink import mavutil
-from sensor_msgs.msg import NavSatFix, Imu
+from sensor_msgs.msg import NavSatFix, Imu, BatteryState
 from six.moves import xrange
 
 class Mavrosinit():
@@ -19,15 +17,14 @@ class Mavrosinit():
         self.imu_data = Imu()
         self.home_position = HomePosition()
         self.local_position = PoseStamped()
-        self.mission_wp = WaypointList()
         self.state = State()
+        self.local_vel = TwistStamped()
         self.mav_type = None
-
         self.sub_topics_ready = {
             key: False
             for key in [
                 'alt', 'ext_state', 'global_pos', 'home_pos', 'local_pos',
-                'mission_wp', 'state', 'imu'
+                'state', 'imu', 'battery'
             ]
         }
         # ROS services
@@ -37,8 +34,6 @@ class Mavrosinit():
             rospy.wait_for_service('mavros/param/get', service_timeout)
             rospy.wait_for_service('mavros/param/set', service_timeout)
             rospy.wait_for_service('mavros/cmd/arming', service_timeout)
-            rospy.wait_for_service('mavros/mission/push', service_timeout)
-            rospy.wait_for_service('mavros/mission/clear', service_timeout)
             rospy.wait_for_service('mavros/set_mode', service_timeout)
             rospy.loginfo("ROS services are up")
         except rospy.ROSException:
@@ -48,10 +43,6 @@ class Mavrosinit():
         self.set_arming_srv = rospy.ServiceProxy('mavros/cmd/arming',
                                                  CommandBool)
         self.set_mode_srv = rospy.ServiceProxy('mavros/set_mode', SetMode)
-        self.wp_clear_srv = rospy.ServiceProxy('mavros/mission/clear',
-                                               WaypointClear)
-        self.wp_push_srv = rospy.ServiceProxy('mavros/mission/push',
-                                              WaypointPush)
 
         # ROS subscribers
         self.alt_sub = rospy.Subscriber('mavros/altitude', Altitude,
@@ -71,10 +62,16 @@ class Mavrosinit():
         self.local_pos_sub = rospy.Subscriber('mavros/local_position/pose',
                                               PoseStamped,
                                               self.local_position_callback)
-        self.mission_wp_sub = rospy.Subscriber(
-            'mavros/mission/waypoints', WaypointList, self.mission_wp_callback)
         self.state_sub = rospy.Subscriber('mavros/state', State,
                                           self.state_callback)
+
+        self.battery_sub = rospy.Subscriber('mavros/battery', BatteryState,
+                                            self.battery_callback)
+
+        self.local_vel_sub = rospy.Subscriber('mavros/global_position/raw/gps_vel', TwistStamped,
+                                                 self.local_vel_callback)
+
+
 #
 # Callback functions
 #
@@ -86,12 +83,6 @@ class Mavrosinit():
             self.sub_topics_ready['alt'] = True
 
     def extended_state_callback(self, data):
-        if self.extended_state.vtol_state != data.vtol_state:
-            rospy.loginfo("VTOL state changed from {0} to {1}".format(
-                mavutil.mavlink.enums['MAV_VTOL_STATE']
-                [self.extended_state.vtol_state].name, mavutil.mavlink.enums[
-                    'MAV_VTOL_STATE'][data.vtol_state].name))
-
         if self.extended_state.landed_state != data.landed_state:
             rospy.loginfo("landed state changed from {0} to {1}".format(
                 mavutil.mavlink.enums['MAV_LANDED_STATE']
@@ -127,15 +118,11 @@ class Mavrosinit():
         if not self.sub_topics_ready['local_pos']:
             self.sub_topics_ready['local_pos'] = True
 
-    def mission_wp_callback(self, data):
-        if self.mission_wp.current_seq != data.current_seq:
-            rospy.loginfo("current mission waypoint sequence updated: {0}".
-                          format(data.current_seq))
+    def battery_callback(self, data):
+        self.battery = data
 
-        self.mission_wp = data
-
-        if not self.sub_topics_ready['mission_wp']:
-            self.sub_topics_ready['mission_wp'] = True
+        if not self.sub_topics_ready['battery']:
+            self.sub_topics_ready['battery'] = True
 
     def state_callback(self, data):
         if self.state.armed != data.armed:
@@ -157,23 +144,25 @@ class Mavrosinit():
                         'MAV_STATE'][data.system_status].name))
 
         self.state = data
-
         # mavros publishes a disconnected state message on init
         if not self.sub_topics_ready['state'] and data.connected:
             self.sub_topics_ready['state'] = True
+
+    def landingtarget_callback(self, data):
+        self.landing_target = data
+
+    def local_vel_callback(self, data):
+        self.local_vel = data
     #
     # Helper methods
     #
     def set_arm(self, arm, timeout):
         """arm: True to arm or False to disarm, timeout(int): seconds"""
         rospy.loginfo("setting FCU arm: {0}".format(arm))
-        old_arm = self.state.armed
         loop_freq = 1  # Hz
         rate = rospy.Rate(loop_freq)
-        arm_set = False
         for i in xrange(timeout * loop_freq):
             if self.state.armed == arm:
-                arm_set = True
                 rospy.loginfo("set arm success | seconds: {0} of {1}".format(
                     i / loop_freq, timeout))
                 break
@@ -196,10 +185,8 @@ class Mavrosinit():
         old_mode = self.state.mode
         loop_freq = 1  # Hz
         rate = rospy.Rate(loop_freq)
-        mode_set = False
         for i in xrange(timeout * loop_freq):
             if self.state.mode == mode:
-                mode_set = True
                 rospy.loginfo("set mode success | seconds: {0} of {1}".format(
                     i / loop_freq, timeout))
                 break
@@ -239,7 +226,7 @@ class Mavrosinit():
 
             try:
                 rate.sleep()
-            except rospy.ROSException as e:
+            except rospy.ROSException:
                 quit()
 
     def wait_for_topics(self, timeout):
@@ -249,17 +236,15 @@ class Mavrosinit():
         rospy.loginfo("waiting for subscribed topics to be ready")
         loop_freq = 1  # Hz
         rate = rospy.Rate(loop_freq)
-        simulation_ready = False
         for i in xrange(timeout * loop_freq):
             if all(value for value in self.sub_topics_ready.values()):
-                simulation_ready = True
                 rospy.loginfo("simulation topics ready | seconds: {0} of {1}".
                               format(i / loop_freq, timeout))
                 break
 
             try:
                 rate.sleep()
-            except rospy.ROSException as e:
+            except rospy.ROSException:
                 quit()
 
     def wait_for_landed_state(self, desired_landed_state, timeout, index):
@@ -273,86 +258,6 @@ class Mavrosinit():
             if self.extended_state.landed_state == desired_landed_state:
                 landed_state_confirmed = True
                 rospy.loginfo("landed state confirmed | seconds: {0} of {1}".
-                              format(i / loop_freq, timeout))
-                break
-
-            try:
-                rate.sleep()
-            except rospy.ROSException as e:
-                quit()
-
-    def wait_for_vtol_state(self, transition, timeout, index):
-        """Wait for VTOL transition, timeout(int): seconds"""
-        rospy.loginfo(
-            "waiting for VTOL transition | transition: {0}, index: {1}".format(
-                mavutil.mavlink.enums['MAV_VTOL_STATE'][
-                    transition].name, index))
-        loop_freq = 10  # Hz
-        rate = rospy.Rate(loop_freq)
-        transitioned = False
-        for i in xrange(timeout * loop_freq):
-            if transition == self.extended_state.vtol_state:
-                rospy.loginfo("transitioned | seconds: {0} of {1}".format(
-                    i / loop_freq, timeout))
-                transitioned = True
-                break
-
-            try:
-                rate.sleep()
-            except rospy.ROSException as e:
-                quit()
-
-    def clear_wps(self, timeout):
-        """timeout(int): seconds"""
-        loop_freq = 1  # Hz
-        rate = rospy.Rate(loop_freq)
-        wps_cleared = False
-        for i in xrange(timeout * loop_freq):
-            if not self.mission_wp.waypoints:
-                wps_cleared = True
-                rospy.loginfo("clear waypoints success | seconds: {0} of {1}".
-                              format(i / loop_freq, timeout))
-                break
-            else:
-                try:
-                    res = self.wp_clear_srv()
-                    if not res.success:
-                        rospy.logerr("failed to send waypoint clear command")
-                except rospy.ServiceException as e:
-                    rospy.logerr(e)
-
-            try:
-                rate.sleep()
-            except rospy.ROSException as e:
-                quit()
-
-    def send_wps(self, waypoints, timeout):
-        """waypoints, timeout(int): seconds"""
-        rospy.loginfo("sending mission waypoints")
-        if self.mission_wp.waypoints:
-            rospy.loginfo("FCU already has mission waypoints")
-
-        loop_freq = 1  # Hz
-        rate = rospy.Rate(loop_freq)
-        wps_sent = False
-        wps_verified = False
-        for i in xrange(timeout * loop_freq):
-            if not wps_sent:
-                try:
-                    res = self.wp_push_srv(start_index=0, waypoints=waypoints)
-                    wps_sent = res.success
-                    if wps_sent:
-                        rospy.loginfo("waypoints successfully transferred")
-                except rospy.ServiceException as e:
-                    rospy.logerr(e)
-            else:
-                if len(waypoints) == len(self.mission_wp.waypoints):
-                    rospy.loginfo("number of waypoints transferred: {0}".
-                                  format(len(waypoints)))
-                    wps_verified = True
-
-            if wps_sent and wps_verified:
-                rospy.loginfo("send waypoints success | seconds: {0} of {1}".
                               format(i / loop_freq, timeout))
                 break
 
@@ -399,8 +304,6 @@ class Mavrosinit():
         rospy.loginfo("home_position:\n{}".format(self.home_position))
         rospy.loginfo("========================")
         rospy.loginfo("local_position:\n{}".format(self.local_position))
-        rospy.loginfo("========================")
-        rospy.loginfo("mission_wp:\n{}".format(self.mission_wp))
         rospy.loginfo("========================")
         rospy.loginfo("state:\n{}".format(self.state))
         rospy.loginfo("========================")
