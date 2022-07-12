@@ -63,6 +63,7 @@ class Mavrosinit():
                                               self.local_position_callback)
         self.state_sub = rospy.Subscriber('mavros/state', State,
                                           self.state_callback)
+
 #
 # Callback functions
 #

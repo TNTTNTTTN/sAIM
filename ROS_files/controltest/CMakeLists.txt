@@ -160,8 +160,6 @@ include_directories(
 ## Mark executable scripts (Python etc.) for installation
 ## in contrast to setup.py, you can choose the destination
 catkin_install_python(PROGRAMS
-  scripts/mavros_offboard_posctl_test.py 
-  scripts/mavros_test_common.py 
   scripts/testing.py
   scripts/Safetybehavior.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
