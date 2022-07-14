@@ -3,9 +3,7 @@ import sys
 import rospy
 import math
 import numpy as np
-import pyproj
 import os
-import scipy.spatial.transform
 from geometry_msgs.msg import PoseStamped, Quaternion, Vector3, Twist
 from mavros_msgs.msg import ParamValue, AttitudeTarget, PositionTarget, LandingTarget
 from mavrosinit import Mavrosinit
@@ -16,7 +14,7 @@ from std_msgs.msg import Header, UInt16
 from threading import Thread
 # from tf.transformations import quaternion_from_euler
 
-class Ctrtest(Darknetinit, Mavrosinit):
+class Ctrtest(Darknetinit):
     def __init__(self, systype, wp1lat=0 , wp1lon=0, wp2lat=0, wp2lon=0, wp3lat=0, wp3lon=0):
         self.wp1lat = float(wp1lat)
         self.wp1lon = float(wp1lon)
@@ -64,15 +62,8 @@ class Ctrtest(Darknetinit, Mavrosinit):
             self.vel_thread = Thread(target=self.send_vel, args=())
             self.vel_thread.daemon = True
             self.vel_thread.start()
-        elif systype == 4:
-            self.vel_ang = Twist()
-            self.vel_ang.linear = Vector3()
-            self.vel_ang.angular = Vector3()
-            self.vel_ang_pub = rospy.Publisher('mavros/setpoint_velocity/cmd_vel_unstamped'
-                                               , Twist, queue_size=1)
-            self.vel_ang_thread = Thread(target=self.send_vel_ang, args=())
-            self.vel_ang_thread.daemon = True
-            self.vel_ang_thread.start()
+        else:
+            pass
     def send_pos(self):
         rate = rospy.Rate(10)  # Hz
         self.pos.header = Header()
@@ -175,6 +166,7 @@ class Ctrtest(Darknetinit, Mavrosinit):
         x, y, z = self.geodetic_to_ecef(lat, lon, h)
 
         return self.ecef_to_enu(x, y, z, lat_ref, lon_ref, h_ref)
+
 
     def wptsetup(self,check):
         if check == 0:
@@ -444,60 +436,15 @@ class Ctrtest(Darknetinit, Mavrosinit):
                                    90, 0)
         self.mission_finish_pub.publish(5)
     def test_vel_ang(self):
-        self.wait_for_topics(60)
-        self.wait_for_landed_state(mavutil.mavlink.MAV_LANDED_STATE_ON_GROUND,
-                                   10, -1)
+        rate = rospy.Rate(1)
+        while not rospy.is_shutdown():
+            print(self.Object.object_positions)
+            try :
+                rate.sleep()
+            except:
+                quit()
 
-        self.log_topic_vars()
-        self.set_mode("OFFBOARD", 5)
-        self.set_arm(True, 5)
-        timeout = 10
-        loop_freq = 1  # Hz
-        rate = rospy.Rate(loop_freq)
-        for i in xrange(timeout * loop_freq):
-            self.vel_ang.linear.x = 0
-            self.vel_ang.linear.y = 0
-            self.vel_ang.linear.z = 2
-            self.vel_ang.angular.x = 0
-            self.vel_ang.angular.y = 0
-            self.vel_ang.angular.z = 0
-            try:
-                rate.sleep()
-            except rospy.ROSException:
-                quit()
-        for j in xrange(timeout-5 * loop_freq):
-            self.vel_ang.linear.x = 1
-            self.vel_ang.linear.y = 0
-            self.vel_ang.linear.z = 0
-            self.vel_ang.angular.x = 0
-            self.vel_ang.angular.y = 0
-            self.vel_ang.angular.z = 0
-            try:
-                rate.sleep()
-            except rospy.ROSException:
-                quit()
-        for i in xrange(timeout * loop_freq):
-            self.vel_ang.linear.x = 5
-            self.vel_ang.linear.y = 0
-            self.vel_ang.linear.z = 0
-            self.vel_ang.angular.x = 0
-            self.vel_ang.angular.y = 0
-            self.vel_ang.angular.z = 0
-            try:
-                rate.sleep()
-            except rospy.ROSException:
-                quit()
-        for j in xrange(timeout-5 * loop_freq):
-            self.vel_ang.linear.x = 10
-            self.vel_ang.linear.y = 0
-            self.vel_ang.linear.z = 0
-            self.vel_ang.angular.x = 0
-            self.vel_ang.angular.y = 0.1
-            self.vel_ang.angular.z = 0
-            try:
-                rate.sleep()
-            except rospy.ROSException:
-                quit()
+
 if __name__ == '__main__':
     rospy.init_node('controltest', anonymous=True)
     systype = int(input("Input system type: \n"))

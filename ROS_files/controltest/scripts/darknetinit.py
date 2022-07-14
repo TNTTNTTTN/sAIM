@@ -6,10 +6,29 @@ import rospy
 import math
 from sensor_msgs.msg import Image
 from std_msgs.msg import Int8
-# from darknet_ros_msgs.msg import BoundingBoxes
-
-
+from position_msgs.msg import ObjectPositions, ObjectPosition 
+from geometry_msgs.msg import Quaternion
 class Darknetinit():
     def __init__(self):
         super(Darknetinit, self).__init__()
+        self.Object = ObjectPositions()
+        self.Object_sub = rospy.Subscriber('/objects_position/message',ObjectPositions,self.Object_callback)
+    def Object_callback(self,data):
+        self.Object = ObjectPositions()
+        classlen=len(data.object_positions)
+        for i in range(classlen):
+            self.Object.object_positions.append(self.cam_rotation(data.object_positions[i]))
+
+    def cam_rotation(self, dataset):
+        Object_refined = ObjectPosition()
+        Object_refined.Class = dataset.Class
+        Object_refined.x = dataset.z
+        Object_refined.y = -dataset.x
+        Object_refined.z = -dataset.y
+        return Object_refined
+
+    def body_rotation(self, dataset):
+        # theta 15 degree rotation
+        Cam_rotation = Quaternion(*[0, 0.1305262, 0, 0.9914449])
+
     """ 여기서부터 MAVROS <-> DARKNET_ROS 토픽 코드들을 적어주세요"""
