@@ -63,6 +63,7 @@ class Mavrosinit():
                                               self.local_position_callback)
         self.state_sub = rospy.Subscriber('mavros/state', State,
                                           self.state_callback)
+
 #
 # Callback functions
 #
@@ -233,10 +234,8 @@ class Mavrosinit():
                           desired_landed_state].name, index))
         loop_freq = 10  # Hz
         rate = rospy.Rate(loop_freq)
-        landed_state_confirmed = False
         for i in xrange(timeout * loop_freq):
             if self.extended_state.landed_state == desired_landed_state:
-                landed_state_confirmed = True
                 rospy.loginfo("landed state confirmed | seconds: {0} of {1}".
                               format(i / loop_freq, timeout))
                 break

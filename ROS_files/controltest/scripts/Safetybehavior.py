@@ -2,32 +2,26 @@
 
 import rospy
 import math
+import numpy as np
 from geometry_msgs.msg import PoseStamped, TwistStamped
 from mavros_msgs.msg import Altitude, ExtendedState, HomePosition, State, PositionTarget, LandingTarget, ParamValue
 from mavros_msgs.srv import CommandBool, ParamGet, ParamSet, SetMode
 from pymavlink import mavutil
-from sensor_msgs.msg import NavSatFix, Imu, BatteryState
+from sensor_msgs.msg import NavSatFix, Imu, BatteryState, Image
 from six.moves import xrange
-from std_msgs.msg import UInt16
+from std_msgs.msg import UInt16, Bool
 import os
-# 콜백함수
 
+# 콜백함수
 def altitude_callback(data):
     global sub_topics_ready, altitude
     altitude = data
 
-    # amsl has been observed to be nan while other fields are valid
     if not sub_topics_ready['alt'] and not math.isnan(data.amsl):
         sub_topics_ready['alt'] = True
 
 def extended_state_callback(data):
     global sub_topics_ready, extended_state
-    # if extended_state.landed_state != data.landed_state:
-    #     rospy.loginfo("landed state changed from {0} to {1}".format(
-    #         mavutil.mavlink.enums['MAV_LANDED_STATE']
-    #         [extended_state.landed_state].name, mavutil.mavlink.enums[
-    #             'MAV_LANDED_STATE'][data.landed_state].name))
-
     extended_state = data
 
     if not sub_topics_ready['ext_state']:
@@ -70,24 +64,6 @@ def battery_callback(data):
 
 def state_callback(data):
     global sub_topics_ready, state
-    # if state.armed != data.armed:
-    #     rospy.loginfo("armed state changed from {0} to {1}".format(
-    #         state.armed, data.armed))
-    #
-    # if state.connected != data.connected:
-    #     rospy.loginfo("connected changed from {0} to {1}".format(
-    #         state.connected, data.connected))
-    #
-    # if state.mode != data.mode:
-    #     rospy.loginfo("mode changed from {0} to {1}".format(
-    #         state.mode, data.mode))
-    #
-    # if state.system_status != data.system_status:
-    #     rospy.loginfo("system_status changed from {0} to {1}".format(
-    #         mavutil.mavlink.enums['MAV_STATE'][
-    #             state.system_status].name, mavutil.mavlink.enums[
-    #             'MAV_STATE'][data.system_status].name))
-
     state = data
     # mavros publishes a disconnected state message on init
     if not sub_topics_ready['state'] and data.connected:
@@ -104,158 +80,26 @@ def local_vel_callback(data):
 def mission_status_callback(data):
     global mission_status
     mission_status = data.data
-
-# 기능성 함수
-def set_arm( arm, timeout):
-    """arm: True to arm or False to disarm, timeout(int): seconds"""
-    rospy.loginfo("setting FCU arm: {0}".format(arm))
-    loop_freq = 1  # Hz
-    rate = rospy.Rate(loop_freq)
-    for i in xrange(timeout * loop_freq):
-        if state.armed == arm:
-            rospy.loginfo("set arm success | seconds: {0} of {1}".format(
-                i / loop_freq, timeout))
-            break
-        else:
-            try:
-                res = set_arming_srv(arm)
-                if not res.success:
-                    rospy.logerr("failed to send arm command")
-            except rospy.ServiceException as e:
-                rospy.logerr(e)
-
-        try:
-            rate.sleep()
-        except rospy.ROSException:
-            quit()
-
-def set_mode( mode, timeout):
-    """mode: PX4 mode string, timeout(int): seconds"""
-    rospy.loginfo("setting FCU mode: {0}".format(mode))
-    old_mode = state.mode
-    loop_freq = 1  # Hz
-    rate = rospy.Rate(loop_freq)
-    for i in xrange(timeout * loop_freq):
-        if state.mode == mode:
-            rospy.loginfo("set mode success | seconds: {0} of {1}".format(
-                i / loop_freq, timeout))
-            break
-        else:
-            try:
-                res = set_mode_srv(0, mode)  # 0 is custom mode
-                if not res.mode_sent:
-                    rospy.logerr("failed to send mode command")
-            except rospy.ServiceException as e:
-                rospy.logerr(e)
-
-        try:
-            rate.sleep()
-        except rospy.ROSException:
-            quit()
-
-def set_param( param_id, param_value, timeout):
-    """param: PX4 param string, ParamValue, timeout(int): seconds"""
-    if param_value.integer != 0:
-        value = param_value.integer
-    else:
-        value = param_value.real
-    rospy.loginfo("setting PX4 parameter: {0} with value {1}".
-                  format(param_id, value))
-    loop_freq = 1  # Hz
-    rate = rospy.Rate(loop_freq)
-    param_set = False
-    for i in xrange(timeout * loop_freq):
-        try:
-            res = set_param_srv(param_id, param_value)
-            if res.success:
-                rospy.loginfo("param {0} set to {1} | seconds: {2} of {3}".
-                              format(param_id, value, i / loop_freq, timeout))
-            break
-        except rospy.ServiceException as e:
-            rospy.logerr(e)
-
-        try:
-            rate.sleep()
-        except rospy.ROSException:
-            quit()
-
-def wait_for_topics( timeout):
-    """wait for simulation to be ready, make sure we're getting topic info
-    from all topics by checking dictionary of flag values set in callbacks,
-    timeout(int): seconds"""
-    rospy.loginfo("waiting for subscribed topics to be ready")
-    loop_freq = 1  # Hz
-    rate = rospy.Rate(loop_freq)
-    for i in xrange(timeout * loop_freq):
-        if all(value for value in sub_topics_ready.values()):
-            rospy.loginfo("simulation topics ready | seconds: {0} of {1}".
-                          format(i / loop_freq, timeout))
-            break
-
-        try:
-            rate.sleep()
-        except rospy.ROSException:
-            quit()
-
-def wait_for_landed_state(desired_landed_state, timeout, index):
-    rospy.loginfo("waiting for landed state | state: {0}, index: {1}".
-                  format(mavutil.mavlink.enums['MAV_LANDED_STATE'][
-                             desired_landed_state].name, index))
-    loop_freq = 10  # Hz
-    rate = rospy.Rate(loop_freq)
-    landed_state_confirmed = False
-    for i in xrange(timeout * loop_freq):
-        if extended_state.landed_state == desired_landed_state:
-            landed_state_confirmed = True
-            rospy.loginfo("landed state confirmed | seconds: {0} of {1}".
-                          format(i / loop_freq, timeout))
-            break
-
-        try:
-            rate.sleep()
-        except rospy.ROSException as e:
-            quit()
-
-def wait_for_mav_type(timeout):
-    """Wait for MAV_TYPE parameter, timeout(int): seconds"""
-    rospy.loginfo("waiting for MAV_TYPE")
-    loop_freq = 1  # Hz
-    rate = rospy.Rate(loop_freq)
-    for i in xrange(timeout * loop_freq):
-        try:
-            res = get_param_srv('MAV_TYPE')
-            if res.success:
-                mav_type = res.value.integer
-                rospy.loginfo(
-                    "MAV_TYPE received | type: {0} | seconds: {1} of {2}".
-                    format(mavutil.mavlink.enums['MAV_TYPE'][mav_type]
-                           .name, i / loop_freq, timeout))
-                break
-        except rospy.ServiceException as e:
-            rospy.logerr(e)
-
-        try:
-            rate.sleep()
-        except rospy.ROSException:
-            quit()
-
-def log_topic_vars():
-    """log the state of topic variables"""
-    rospy.loginfo("========================")
-    rospy.loginfo("===== topic values =====")
-    rospy.loginfo("========================")
-    rospy.loginfo("altitude:\n{}".format(altitude))
-    rospy.loginfo("========================")
-    rospy.loginfo("extended_state:\n{}".format(extended_state))
-    rospy.loginfo("========================")
-    rospy.loginfo("global_position:\n{}".format(global_position))
-    rospy.loginfo("========================")
-    rospy.loginfo("home_position:\n{}".format(home_position))
-    rospy.loginfo("========================")
-    rospy.loginfo("local_position:\n{}".format(local_position))
-    rospy.loginfo("========================")
-    rospy.loginfo("state:\n{}".format(state))
-    rospy.loginfo("========================")
+#
+# def distance_callback(data):
+#     global depth_array, image
+#     image = data
+#     depth_image = bridge.imgmsg_to_cv2(data, "32FC1")
+#     depth_array = np.array(depth_image, dtype=np.float32)
+#
+# def is_object_callback(data):
+#     global objectcheck
+#     objectcheck = data
+#
+# def safetyrangecheck(depth):
+#     if depth[depth < 18].size == 0:
+#         return False
+#     else:
+#         array = np.min(depth[depth < 18], axis=0)
+#         if True in array[array > 0 and array < 1.5]:
+#             return True
+#         else:
+#             return False
 
 altitude = Altitude()
 extended_state = ExtendedState()
@@ -269,6 +113,8 @@ mav_type = None
 battery = BatteryState()
 landing_target = LandingTarget()
 mission_status = UInt16()
+# bridge = CvBridge()
+objectcheck = Bool()
 sub_topics_ready = {
                 key: False
                 for key in [
@@ -305,7 +151,9 @@ def subscriber():
     rospy.Subscriber('mavros/battery', BatteryState, battery_callback)
     rospy.Subscriber('mavros/global_position/raw/gps_vel', TwistStamped, local_vel_callback)
     rospy.Subscriber('mavros/landing_target/raw', LandingTarget, landingtarget_callback)
+    # rospy.Subscriber('camera/depth/image_raw', Image, distance_callback)
     rospy.Subscriber('mission_status', UInt16, mission_status_callback)
+    # rospy.Subscriber('is_object',Bool, is_object_callback)
 
 class Selector(object):
     def __init__(self):
@@ -319,8 +167,6 @@ class Selector(object):
             if self.child[i].status:
                 self.status = True
                 break
-
-
 
 class Sequence(object):
     def __init__(self):
@@ -358,20 +204,26 @@ class Syscheck():
                 self.status = False
 
         if not state.connected:
+            print("FCU CONNECTON FAILED")
             self.status = False
 
         elif state.system_status > 4:
+            print("SYSTEM STATUS CRITICAL")
             self.status = False
 
         elif battery.percentage < 0.6:
+            print("LOW BATTERY STATUS")
             self.status = False
 
         elif global_position.status.status < 0:
+            print("GPS NOT FIXED")
             if self.type == 2:
+
                 self.status = True
             else:
                 self.status = False
         else:
+            print("SYSTEM STATUS = FINE")
             self.status = True
 
 class Armset():
@@ -380,7 +232,7 @@ class Armset():
     def setup(self):
         if self.type == 0:
             rcl_except = ParamValue(1 << 2, 0.0)
-            set_param("COM_RCL_EXCEPT", rcl_except, 5)
+            set_param_srv("COM_RCL_EXCEPT", rcl_except)
             while True:
                 res = set_arming_srv(True)
                 if res.success:
@@ -394,14 +246,25 @@ class Armset():
                     break
 
 class Mission():
-    def __init__(self):
+    def __init__(self, check):
         self.status = None
-
+        self.check = check
     def setup(self):
+        if self.check == 1:
+            if objectcheck:
+                print("NON-GPS flight: OBJECT BASED MOVEMENT")
+            else:
+                print("MISSION PROCEED FAILURE : NO OBJECT FOR ESTIMATION")
+                self.status = False
+                return
+        # if mission_status in (2, 3) and safetyrangecheck(depth_array):
+        #     print("MISSION PROCEED FAILURE : OBJECT TOO CLOSE")
+        #     self.status = False
+        # else:
         if (state.mode == 'OFFBOARD' and mission_status in (1,2,3)) \
-            or (state.mode == "AUTO.PRECLAND" and mission_status == 4):
+            or (state.mode == "AUTO.PRECLAND" and mission_status == 5):
             self.status = True
-        elif state.mode == 'OFFBOARD' and mission_status == 4:
+        elif state.mode == 'OFFBOARD' and mission_status == 5:
             res = set_mode_srv(0, 'AUTO.PRECLAND')
             if res.mode_sent:
                 self.status = True
@@ -441,28 +304,28 @@ class Modecheck() :
                 self.status = False
 
 def preorder(node):
-    if node:
-        node.setup()
     os.system('clear')
     print("*************CURRENT STATUS*************")
     print("ARMED = {}".format(state.armed))
     print("MODE = {}".format(state.mode))
-    print("BATTERY = {}%".format(round(battery.percentage*100, 2)))
-    if state.system_status < 5:
-        print("SYSTEM STATUS = FINE")
-    else:
-        print("SYSTEM STATUS = CRITICAL")
+    print("BATTERY = {}%".format(round(battery.percentage * 100, 2)))
+    if node:
+        node.setup()
     if mission_status == 0:
         print("MISSION STATUS: SETUP")
     elif mission_status == 1:
-        print("MISSION STATUS = WPT1")
+        print("MISSION STATUS: TAKEOFF")
     elif mission_status == 2:
-        print("MISSION STATUS = WPT2")
+        print("MISSION STATUS = WPT1")
     elif mission_status == 3:
-        print("MISSION STATUS = WPT3")
+        print("MISSION STATUS = WPT2")
     elif mission_status == 4:
-        print("MISSION STATUS = LANDING")
+        print("MISSION STATUS = WPT3")
     elif mission_status == 5:
+        print("MISSION STATUS = LANDING")
+    elif mission_status == 6:
+        print("MISSION STATUS = DELIVERING")
+    elif mission_status == 7:
         print("MISSION STATUS = FINISH!")
     else:
         print("NO MISSION INPUT!")
@@ -485,9 +348,9 @@ def rootset():
     initcheck = Syscheck(0)
     arming = Armset(0)
     maincheck = Syscheck(1)
-    main = Mission()
+    main = Mission(0)
     gpscheck = Syscheck(2)
-    nongps = Mission()
+    nongps = Mission(1)
     initsel.child.extend([manumode, mainsel, loitermode])
     mainsel.child.extend([armseq, misseq, gpsseq])
     # landseq.child.extend([landcheck, landstacheck, disarm])
@@ -503,7 +366,7 @@ if __name__ == '__main__':
     rate = rospy.Rate(5)
     root = rootset()
     while not rospy.is_shutdown():
-        if mission_status == 5:
+        if mission_status == 7:
             res = set_arming_srv(False)
             quit()
         preorder(root)
