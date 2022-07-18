@@ -155,6 +155,27 @@ def subscriber():
     rospy.Subscriber('mission_status', UInt16, mission_status_callback)
     # rospy.Subscriber('is_object',Bool, is_object_callback)
 
+def batcal():
+    return 1 - 0.05*(25.2 - battery.voltage)/0.3 
+def mission_check():
+    if mission_status == 0:
+        print("MISSION STATUS: SETUP")
+    elif mission_status == 1:
+        print("MISSION STATUS: TAKEOFF")
+    elif mission_status == 2:
+        print("MISSION STATUS = WPT1")
+    elif mission_status == 3:
+        print("MISSION STATUS = WPT2")
+    elif mission_status == 4:
+        print("MISSION STATUS = WPT3")
+    elif mission_status == 5:
+        print("MISSION STATUS = LANDING")
+    elif mission_status == 6:
+        print("MISSION STATUS = DELIVERING")
+    elif mission_status == 7:
+        print("MISSION STATUS = FINISH!")
+    else:
+        print("NO MISSION INPUT!")
 class Selector(object):
     def __init__(self):
         self.child = []
@@ -211,9 +232,19 @@ class Syscheck():
             print("SYSTEM STATUS CRITICAL")
             self.status = False
 
-        elif battery.percentage < 0.6:
-            print("LOW BATTERY STATUS")
-            self.status = False
+        a = batcal()
+
+        elif a < 0.6:
+            if self.type == 0:
+                print("LOW BATTERY STATUS")
+                self.status = False
+            else :
+                if a < 0.1:
+                    print("CRITICAL LOW BATTERY STATUS")
+                    self.status = False
+                else : 
+                    print("WARNING: LOW BATTERY STATUS")
+
 
         elif global_position.status.status < 0:
             print("GPS NOT FIXED")
@@ -226,6 +257,7 @@ class Syscheck():
             print("SYSTEM STATUS = FINE")
             self.status = True
 
+
 class Armset():
     def __init__(self,typecheck):
         self.type = typecheck
@@ -233,7 +265,8 @@ class Armset():
         if self.type == 0:
             rcl_except = ParamValue(1 << 2, 0.0)
             set_param_srv("COM_RCL_EXCEPT", rcl_except)
-            while True:
+            a = input("type \"ARM\" to set arm: \n")
+            while a == "ARM":
                 res = set_arming_srv(True)
                 if res.success:
                     self.status = True
@@ -308,27 +341,10 @@ def preorder(node):
     print("*************CURRENT STATUS*************")
     print("ARMED = {}".format(state.armed))
     print("MODE = {}".format(state.mode))
-    print("BATTERY = {}%".format(round(battery.percentage * 100, 2)))
+    print("BATTERY = {}%".format(round(batcal() * 100, 2)))
     if node:
         node.setup()
-    if mission_status == 0:
-        print("MISSION STATUS: SETUP")
-    elif mission_status == 1:
-        print("MISSION STATUS: TAKEOFF")
-    elif mission_status == 2:
-        print("MISSION STATUS = WPT1")
-    elif mission_status == 3:
-        print("MISSION STATUS = WPT2")
-    elif mission_status == 4:
-        print("MISSION STATUS = WPT3")
-    elif mission_status == 5:
-        print("MISSION STATUS = LANDING")
-    elif mission_status == 6:
-        print("MISSION STATUS = DELIVERING")
-    elif mission_status == 7:
-        print("MISSION STATUS = FINISH!")
-    else:
-        print("NO MISSION INPUT!")
+    mission_check()
 
 print("debug point2")
 

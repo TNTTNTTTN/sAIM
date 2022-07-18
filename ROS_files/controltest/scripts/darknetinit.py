@@ -5,20 +5,33 @@
 import rospy
 import numpy as np
 from sensor_msgs.msg import Image
-from std_msgs.msg import Int8
+from std_msgs.msg import Int8, Float32
 from position_msgs.msg import ObjectPositions, ObjectPosition
 from geometry_msgs.msg import Quaternion
 class Darknetinit():
     def __init__(self):
         super(Darknetinit, self).__init__()
+        self.nan = float('nan')
+        self.inf = float('inf')
+        self.minf = float('-inf')
         self.Object = ObjectPositions()
         self.Object_sub = rospy.Subscriber('/objects_position/message', ObjectPositions,self.Object_callback)
+        self.Center = Float32()
+        self.Center_sub = rospy.Subscriber('/depth/center', Float32, self.Center_callback)
     def Object_callback(self,data):
         self.Object = ObjectPositions()
         classlen=len(data.object_positions)
         for i in range(classlen):
-            if data.object_positions[i].Class == "Person":
-                self.Object.object_positions.append(self.cam_rotation(data.object_positions[i]))
+            if data.object_positions[i].Class == "person":
+                if data.object_positions[i].x in (self.inf, self.minf)\
+                 or data.object_positions[i].y in (self.inf, self.minf)\
+                 or data.object_positions[i].z in (self.inf, self.minf)\
+                 or np.isnan(data.object_positions[i].x) or np.isnan(data.object_positions[i].y) or np.isnan(data.object_positions[i].z):
+                    continue
+                else: 
+                    self.Object.object_positions.append(self.cam_rotation(data.object_positions[i]))
+    def Center_callback(self, data):
+        self.Center = round(data, 2)
 
     def cam_rotation(self, dataset):
         Object_refined = ObjectPosition()

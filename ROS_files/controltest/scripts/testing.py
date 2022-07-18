@@ -6,6 +6,8 @@ import rospy
 import math
 import numpy as np
 import os
+import Jetson.GPIO as GPIO
+import time
 from geometry_msgs.msg import PoseStamped, Quaternion, Vector3, Twist
 from mavros_msgs.msg import ParamValue, AttitudeTarget, PositionTarget, LandingTarget
 from mavrosinit import Mavrosinit
@@ -27,6 +29,7 @@ class Ctrtest(Darknetinit, Mavrosinit):
         self.b = 6356752.3142
         self.f = (self.a - self.b) / self.a
         self.e_sq = self.f * (2 - self.f)
+        self.Obj = []
         super(Ctrtest, self).__init__()
         if systype == 1:
         # Posistion control setup
@@ -57,20 +60,44 @@ class Ctrtest(Darknetinit, Mavrosinit):
             self.vel = PositionTarget()
             self.vel.velocity = Vector3()
             self.radius = 0.5
-            self.Obj = []
             self.vel_setpoint_pub = rospy.Publisher(
                 'mavros/setpoint_raw/local', PositionTarget, queue_size=1)
             self.vel_thread = Thread(target=self.send_vel, args=(), daemon=True)
             self.vel_thread.start()
-
-        elif systype == 4:
             self.obj_thread = Thread(target=self.obj_det, args=(), daemon= True)
             self.obj_thread.start()
+
+        elif systype == 4:
+            self.pos = PoseStamped()
+            self.radius = 1
+
+            self.pos_setpoint_pub = rospy.Publisher(
+                'mavros/setpoint_position/local', PoseStamped, queue_size=1)
+
+            # send setpoints in seperate thread to better prevent failsafe
+            self.pos_thread = Thread(target=self.send_pos, args=())
+            self.pos_thread.daemon = True
+            self.pos_thread.start()
+            
+            self.obj_thread = Thread(target=self.obj_det, args=(), daemon= True)
+            self.obj_thread.start()
+            SERVO_L_PIN = 32
+            SERVO_R_PIN = 33
+
+            GPIO.setwarnings(False)
+            GPIO.setmode(GPIO.BOARD)
+            GPIO.setup(SERVO_R_PIN,GPIO.OUT)
+            GPIO.setup(SERVO_L_PIN,GPIO.OUT)
+
+            self.pwm_r=GPIO.PWM(SERVO_R_PIN, 50)
+            self.pwm_l=GPIO.PWM(SERVO_L_PIN, 50)
+            self.pwm_r.start(3)          #must be 3.0~10.0
+            self.pwm_l.start(11)
+
     def send_pos(self):
         rate = rospy.Rate(10)  # Hz
         self.pos.header = Header()
         self.pos.header.frame_id = "base_footprint"
-
         while not rospy.is_shutdown():
             self.pos.header.stamp = rospy.Time.now()
             self.pos_setpoint_pub.publish(self.pos)
@@ -109,20 +136,43 @@ class Ctrtest(Darknetinit, Mavrosinit):
                 rate.sleep()
             except rospy.ROSInterruptException:
                 pass
+
     def obj_det(self):
-        rate = rospy.Rate(10)
-        for i in range(len(self.Object.object_positions)):
-            inertial = np.matmul(self.quat2dcm(self.local_position.pose.orientation), [[self.Object.object_positions[i].x],[self.Object.object_positions[i].y],[self.Object.object_positions[i].z]])
-            if len(self.Obj):
-                for j in range(len(self.Obj)):
-                    if ((self.Obj[j].x - inertial[0]) ** 2 + (self.Obj[j].y - inertial[1])**2) > 4:
-                        self.Obj.append(np.transpose(inertial))
-            else:
-                self.Obj.append(np.append(np.transpose(inertial[0:2]), 2))
-        try:
-            rate.sleep()
-        except rospy.ROSInterruptException:
-            pass
+        rate = rospy.Rate(1)
+        while not rospy.is_shutdown():
+            check = True
+            for i in range(len(self.Object.object_positions)):
+                if (self.local_position.pose.orientation == Quaternion(*[0,0,0,0])):
+                    print("local_position not initialized!")
+                    inertial = [[self.Object.object_positions[i].x],[self.Object.object_positions[i].y],[self.Object.object_positions[i].z]]
+                    print(inertial)
+                    for j in range(len(self.Obj)):
+                        #print(((self.Obj[j][0] - inertial[0]) ** 2 + (self.Obj[j][1] - inertial[1])**2)[0][0])
+                        #print(inertial)
+                        if ((self.Obj[j][0] - inertial[0]) ** 2 + (self.Obj[j][1] - inertial[1])**2)[0][0] < 4:
+                            check = False
+                            break
+                    if check == True:
+                        self.Obj.append(np.append(np.transpose(inertial[0:2]), 2))
+                    #break
+                else: 
+                    inertial = np.matmul(self.quat2dcm(self.local_position.pose.orientation), [[self.Object.object_positions[i].x[0]],[self.Object.object_positions[i].y[0]],[self.Object.object_positions[i].z[0]]])
+                    #print("coordinate from local :{}".format(np.transpose(inertial)))
+                    inertial += [[self.local_position.pose.position.x], [self.local_position.pose.position.y],[0]]
+                    #print("coordinate from global :{}".format(np.transpose(inertial)))
+                    for j in range(len(self.Obj)):
+                        #print(((self.Obj[j][0] - inertial[0]) ** 2 + (self.Obj[j][1] - inertial[1])**2)[0][0])
+                        #print(inertial)
+                        if ((self.Obj[j][0] - inertial[0]) ** 2 + (self.Obj[j][1] - inertial[1])**2)[0] < 4:
+                            check = False
+                            break
+                    if check == True:
+                        self.Obj.append(np.append(np.transpose(inertial[0:2]), 2))
+            try:
+                rate.sleep()
+            except rospy.ROSInterruptException:
+                pass
+
     def geodetic_to_ecef(self, lat, lon, h):
         # (lat, lon) in WSG-84 degrees
         # h in meters
@@ -186,15 +236,15 @@ class Ctrtest(Darknetinit, Mavrosinit):
             if self.wp1lat == 0 or self.wp1lon == 0:
                 wp1 = [local[0] ,local[1] , 5]
             else:
-                wp1 = self.lla2enu(self.wp1lat, self.wp1lon, initheight+15, initlat, initlon, initheight) + local
+                wp1 = self.lla2enu(self.wp1lat, self.wp1lon, initheight+5, initlat, initlon, initheight) + local
             if self.wp2lat == 0 or self.wp2lon == 0:
                 wp2 = [local[0] ,local[1] , 5]
             else:
-                wp2 = self.lla2enu(self.wp2lat, self.wp2lon, initheight+15, initlat, initlon, initheight) + local
+                wp2 = self.lla2enu(self.wp2lat, self.wp2lon, initheight+5, initlat, initlon, initheight) + local
             if self.wp3lat == 0 or self.wp3lon == 0:
                 wp3 = [local[0] ,local[1] , 5]
             else:
-                wp3 = self.lla2enu(self.wp3lat, self.wp3lon, initheight+15, initlat, initlon, initheight) + local
+                wp3 = self.lla2enu(self.wp3lat, self.wp3lon, initheight+5, initlat, initlon, initheight) + local
             self.going = (local, [local[0] ,local[1] , 5], wp1, wp2, wp3)
         else:
             local = np.array([self.local_position.pose.position.x, self.local_position.pose.position.y,
@@ -259,43 +309,44 @@ class Ctrtest(Darknetinit, Mavrosinit):
         currenty = self.local_position.pose.position.y
         currentz = self.local_position.pose.position.z
         yaw = math.atan2(y - currenty, x - currentx)
+        if self.Center < 1 and currentz > 3 :
+                        self.set_mode('AUTO.LOITER')
+                        print("MISSION FAIL")
+                        return
         if mode == 0:
             posdiff = np.sqrt((x - currentx)**2 + (y-currenty)**2)
             directionvec = [x - ori_x, y - ori_y]
-            if posdiff > 50:
-                if self.setupspeed < 10:
-                    self.setupspeed += 0.1
-                else:
-                    self.setupspeed = 10
-            else :
-                if self.setupspeed > 0.2 * posdiff:
-                    self.setupspeed -= 0.1
-                else :
-                    self.setupspeed = 0.2 * posdiff
-
+            #if posdiff > 50:
+            #    if self.setupspeed < 10:
+            #        self.setupspeed += 0.1
+            #    else:
+            #        self.setupspeed = 10
+            #else :
+            #    if self.setupspeed > 0.2 * posdiff:
+            #        self.setupspeed -= 0.1
+            #    else :
+            #        self.setupspeed = 0.2 * posdiff
+            self.setupspeed = 1.5
             alpha = math.atan2(y - ori_y, x - ori_x)
-            if np.sqrt((x - ori_x)**2 + (y - ori_y)**2) < 10:
-                vector = self.uniformveccal(self.setupspeed, alpha) + self.sinkveccal(currentx, currenty, x, y, 5)
-            else:
-                vector = self.uniformveccal(self.setupspeed, alpha) + self.sinkveccal(currentx,currenty,x,y,600)
+            vector = self.uniformveccal(self.setupspeed, alpha) + self.sinkveccal(currentx,currenty,x,y,600)
             if np.dot(directionvec, [currentx - x, currenty - y]) >= 0:
                 vector = np.array([x - currentx, y - currenty])
-
             if len(self.Obj):
                 for i in range(len(self.Obj)):
                     if np.dot(directionvec,[self.Obj[i][0] - x, self.Obj[i][1] - y]) >= 0:
                         continue
-                    elif abs(self.uniformpocal(currentx,currenty,alpha,self.setupspeed) - self.uniformpocal(self.Obj[i][0], self.Obj[i][1], alpha, self.setupspeed)) < self.setupspeed:
-                        if currenty - self.Obj[i][1] == 0:
+                    elif abs(self.uniformpocal(currentx,currenty,alpha,self.setupspeed) - self.uniformpocal(Obj[i][0], Obj[i][1], alpha, self.setupspeed)) < self.setupspeed:
+                        if currenty - Obj[i][1] == 0:
                             vector[1] += self.setupspeed
                         else:
-                            vector[1] += 15*(currenty - self.Obj[i][1])/abs((currenty - self.Obj[i][1]))
-                    vector += self.doublitveccal(currentx, currenty, self.Obj[i][0], self.Obj[i][1], self.Obj[i][2], self.setupspeed, alpha)
-                    rospy.loginfo("{}, {}".format(i, self.doublitveccal(currentx, currenty, self.Obj[i][0], self.Obj[i][1], self.Obj[i][2], self.setupspeed, alpha)))
+                            vector[0] += -directionvec[1]
+                            vector[1] += directionvec[0]
+                    vector += self.doublitveccal(currentx, currenty, Obj[i][0], Obj[i][1], Obj[i][2], self.setupspeed, alpha)
+                    rospy.loginfo("{}, {}".format(i, self.doublitveccal(currentx, currenty, Obj[i][0], Obj[i][1], Obj[i][2], self.setupspeed, alpha)))
             vector = vector/np.linalg.norm(vector)
             self.vel.velocity.x = self.setupspeed * vector[0]
             self.vel.velocity.y = self.setupspeed * vector[1]
-            self.vel.velocity.z = 0.8*(15 - currentz)
+            self.vel.velocity.z = 0.8*(5 - currentz)
             if abs(yaw - self.vel.yaw) > math.pi:
                 if yaw - self.vel.yaw > 0:
                     self.vel.yaw -= (yaw - self.vel.yaw - (math.pi * 2))/10
@@ -309,7 +360,7 @@ class Ctrtest(Darknetinit, Mavrosinit):
         else:
             # Building Rotation flight
             if len(self.Obj):
-                speed = 5
+                speed = 1.5
                 vector = self.rotationveccal(currentx,currenty,self.Obj[0][1], self.Obj[0][2])
                 vector = vector/np.linalg.norm(vector)
                 self.vel.velocity.x = speed * vector[0]
@@ -319,6 +370,8 @@ class Ctrtest(Darknetinit, Mavrosinit):
         print("velocity: {0}, {1}, {2}, {3}rad.".format(round(self.vel.velocity.x, 2), round(self.vel.velocity.y, 2), round(self.vel.velocity.z, 2), round(self.vel.yaw, 2)))
         print("curent position: {0}, {1}".format(round(self.local_position.pose.position.x, 2),round(self.local_position.pose.position.y, 2)))
         print("target_position: {0}, {1}".format(round(x, 2), round(y, 2)))
+        for i in range(len(self.Obj)):
+                print("Current Found Object{} : {}".format(i+1,self.Obj[i]))
 
     def uniformpocal(self, x, y, alpha, speed):
         return speed*(y * math.cos(alpha) - x * math.sin(alpha))
@@ -353,15 +406,30 @@ class Ctrtest(Darknetinit, Mavrosinit):
             if len(self.Obj):
                 self.potentialflow(mode=1)
             else:
-                self.vel.velocity.x = - 0.1 * self.local_position.pose.position.x / abs(self.local_position.pose.position.x)
-                self.vel.velocity.y = - 0.1 * self.local_position.pose.position.y / abs(self.local_position.pose.position.y)
-                self.vel.velocity.z = (5 - self.local_position.pose.position.z)
-                self.vel.yaw += 0.1
-
+                if self.Center < 3:
+                    inertial = np.matmul(self.quat2dcm(self.local_position.pose.orientation), [[self.Center],[0],[0]])
+                    inertial += [[self.local_position.pose.position.x], [self.local_position.pose.position.y],[0]]
+                    self.Obj.append(np.append(np.transpose(inertial[0:2]), 2))
+                else:
+                    self.vel.velocity.x = 0
+                    self.vel.velocity.y = 0
+                    self.vel.velocity.z = (5 - self.local_position.pose.position.z)
+                    self.vel.yaw_rate = 0.1
             try:
                 rate.sleep()
             except rospy.ROSException:
                 quit()
+
+        self.vel.velocity.x = 0
+        self.vel.velocity.y = 0            
+        self.vel.velocity.z = 0.8*(1 - self.local_position.pose.position.z)
+        if 0.8*(1 - self.local_position.pose.position.z) < 0.1:
+            # self.pwm_r.ChangeDutyCycle(4.3)
+            # self.pwm_l.ChangeDutyCycle(9.7)
+            time.sleep(5)
+            # self.pwm_r.ChangeDutyCycle(3)
+            # self.pwm_l.ChangeDutyCycle(11)
+            
 
 
     def test_posctl(self):
@@ -381,11 +449,11 @@ class Ctrtest(Darknetinit, Mavrosinit):
         rospy.loginfo("run mission")
         # positions = ((0, 0, 15), (-100, 55, 15), (-180, 99, 15), (-100, 50, 15),
         #              (0, 0, 15), (0, 0, 3))
-        positions = ((0, 0, 1), (0, 0,10))
+        positions = ((self.local_position.pose.position.x, self.local_position.pose.position.y, 1), (self.local_position.pose.position.x, self.local_position.pose.position.y, 5))
         for i in range(len(positions)):
             self.reach_position(positions[i][0], positions[i][1],
                                 positions[i][2], 20)
-        self.set_mode("AUTO.LAND", 5)
+        self.set_mode("AUTO.LAND", 10)
         self.wait_for_landed_state(mavutil.mavlink.MAV_LANDED_STATE_ON_GROUND,
                                    45, 0)
         self.set_arm(False, 5)
@@ -413,6 +481,11 @@ class Ctrtest(Darknetinit, Mavrosinit):
         self.set_arm(False, 5)
 
     def test_vel(self):
+        self.wait_for_topics(60)
+        self.wait_for_landed_state(mavutil.mavlink.MAV_LANDED_STATE_ON_GROUND,
+                                   10, -1)
+        self.set_mode("OFFBOARD", 5)
+        self.set_arm(True, 5)
         self.mission_finish_pub = rospy.Publisher(
             'mission_status', UInt16, queue_size=1)
         pos = 1
@@ -425,6 +498,7 @@ class Ctrtest(Darknetinit, Mavrosinit):
             self.mission_finish_pub.publish(0)
             print("\rwaiting", end="")
         self.wptsetup(0)
+        # Going
         for _ in range(timeout * loop_freq):
             if pos == len(self.going):
                 break
@@ -433,17 +507,20 @@ class Ctrtest(Darknetinit, Mavrosinit):
             if self.is_at_position(self.going[pos][0], self.going[pos][1], self.going[pos][2], self.radius):
                 rospy.loginfo("position reached!")
                 pos += 1
-
             try:
                 rate.sleep()
             except rospy.ROSException or KeyboardInterrupt:
                 quit()
+        self.Obj1 = self.Obj
+        # Delivery
         self.Obj = []
         self.mission_finish_pub.publish(6)
         self.delivery()
-
+        
         pos = 1
         self.wptsetup(1)
+        self.Obj2 = self.Obj
+        self.Obj = []
         for _ in range(timeout * loop_freq):
             if pos == len(self.back):
                 break
@@ -458,18 +535,27 @@ class Ctrtest(Darknetinit, Mavrosinit):
             except rospy.ROSException or KeyboardInterrupt:
                 quit()
         self.mission_finish_pub.publish(5)
+        self.set_mode("AUTO.PRECLAND", 5)
         self.wait_for_landed_state(mavutil.mavlink.MAV_LANDED_STATE_ON_GROUND,
                                    90, 0)
+        self.set_arm(False, 5)
         self.mission_finish_pub.publish(7)
+
     def test_obj(self):
         rate = rospy.Rate(0.5)
+        self.wait_for_landed_state(mavutil.mavlink.MAV_LANDED_STATE_ON_GROUND,
+                                   10, -1)
+        self.set_mode("OFFBOARD", 5)
         while not rospy.is_shutdown():
+            #if not (self.local_position.pose.position == Vector3()):
+            print("current_position: {}",self.local_position.pose.position)
             for i in range(len(self.Obj)):
-                print("Current Found Object{} : {}".format(i+1,self.Obj[i]))
+                print("Current Found Object{} : {},{} circle range:{}".format(i+1,round(self.Obj[i][0],3),round(self.Obj[i][1],3),round(self.Obj[i][2], 3)))
             try:
                 rate.sleep()
             except KeyboardInterrupt or rospy.ROSException:
                 quit()
+
 if __name__ == '__main__':
     rospy.init_node('controltest', anonymous=True)
     systype = int(input("Input system type: \n"))
@@ -485,6 +571,9 @@ if __name__ == '__main__':
         lat3, lon3 = input("WPT3 GPS coordinate : \n").split()
         offboard_control = Ctrtest(systype, wp1lat=lat1, wp1lon=lon1, wp2lat=lat2, wp2lon=lon2, wp3lat=lat3, wp3lon=lon3)
         offboard_control.test_vel()
+    elif systype == 4:
+        offboard_control = Ctrtest(systype)
+        offboard_control.test_obj()
     else:
         print("wrong system type")
         sys.exit(1)
